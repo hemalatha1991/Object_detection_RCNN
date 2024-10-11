@@ -1,0 +1,130 @@
+import numpy as np
+import torch
+
+def calculate_iou(box1, box2):
+    if box1.shape[0] == 0 or box2.shape[0] == 0:
+        return np.zeros((box1.shape[0], box2.shape[0]))
+
+    x1 = np.maximum(box1[:, 0:1], box2[:, 0])
+    y1 = np.maximum(box1[:, 1:2], box2[:, 1])
+    x2 = np.minimum(box1[:, 2:3], box2[:, 2])
+    y2 = np.minimum(box1[:, 3:4], box2[:, 3])
+
+    intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+    area_box1 = (box1[:, 2] - box1[:, 0]) * (box1[:, 3] - box1[:, 1])
+    area_box2 = (box2[:, 2] - box2[:, 0]) * (box2[:, 3] - box2[:, 1])
+    union = area_box1[:, None] + area_box2 - intersection
+
+    iou = intersection / union
+    return iou
+
+def calculate_accuracy(test_results, iou_threshold=0.5, confidence_threshold=0.5):
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+
+    for result in test_results:
+        true_boxes = result['target_boxes']
+        pred_boxes = result['pred_boxes']
+        pred_scores = result['pred_scores']
+
+        if len(pred_boxes) == 0:
+            total_fn += len(true_boxes)
+            continue
+
+        valid_indices = pred_scores > confidence_threshold
+        pred_boxes = pred_boxes[valid_indices]
+
+        if len(pred_boxes) == 0:
+            total_fn += len(true_boxes)
+            continue
+
+        # Calculate IoU for filtered predictions
+        ious = calculate_iou(pred_boxes, true_boxes)
+
+        if ious.size == 0:  # if IoU array is empty
+            total_fp += len(pred_boxes)  # Count all predictions as false positives
+            total_fn += len(true_boxes)  # All ground truths are false negatives
+            continue
+
+        matched_gt = set()
+        for i, pred_box in enumerate(pred_boxes):
+            if len(ious[i]) == 0:
+                continue  # Skip if no valid IoU
+
+            max_iou_idx = np.argmax(ious[i])
+            max_iou = ious[i, max_iou_idx]
+
+            if max_iou >= iou_threshold and max_iou_idx not in matched_gt:
+                total_tp += 1
+                matched_gt.add(max_iou_idx)
+            else:
+                total_fp += 1
+
+        total_fn += len(true_boxes) - len(matched_gt)
+
+    # Calculate precision and recall
+    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+
+    print(f"Precision: {precision:.4f}, Recall: {recall:.4f}")
+
+def calculate_validation_accuracy(model, loader, device, iou_threshold=0.5):
+    model.eval()
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+
+    with torch.no_grad():
+        for imgs, annotations in loader:
+            imgs = list(img.to(device) for img in imgs)
+            annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
+
+            # Filtering out samples with empty annotations
+            annotations = [
+                annotation for annotation in annotations
+                if annotation['boxes'].nelement() > 0
+            ]
+
+            if len(annotations) == 0:
+                continue
+
+            # Getting predictions
+            predictions = model(imgs)
+
+            # Calculate counts for TP, FP, FN
+            for i, prediction in enumerate(predictions):
+                pred_boxes = prediction['boxes'].cpu().numpy()
+                pred_scores = prediction['scores'].cpu().numpy()
+                true_boxes = annotations[i]['boxes'].cpu().numpy()
+
+                # Filter predictions by confidence threshold
+                confidence_threshold = 0.5
+                valid_indices = np.where(pred_scores > confidence_threshold)[0]
+                pred_boxes = pred_boxes[valid_indices]
+
+                if len(pred_boxes) > 0 and len(true_boxes) > 0:
+                    ious = calculate_iou(pred_boxes, true_boxes)
+
+                    matched_gt = set()
+                    for j in range(len(pred_boxes)):
+                        max_iou_idx = np.argmax(ious[j])
+                        max_iou = ious[j, max_iou_idx]
+
+                        if max_iou >= iou_threshold and max_iou_idx not in matched_gt:
+                            total_tp += 1
+                            matched_gt.add(max_iou_idx)
+                        else:
+                            total_fp += 1
+
+                    # Counting false negatives
+                    total_fn += len(true_boxes) - len(matched_gt)
+                elif len(pred_boxes) == 0:
+                    total_fn += len(true_boxes)
+                else:
+                    total_fp += len(pred_boxes)
+
+    # Return accuracy as a ratio of TP to total predictions (TP + FP + FN)
+    total_predictions = total_tp + total_fp + total_fn
+    accuracy = total_tp / total_predictions if total_predictions > 0 else 0
+    return accuracy
