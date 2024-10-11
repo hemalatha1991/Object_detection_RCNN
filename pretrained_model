@@ -11,48 +11,52 @@ from prediction import save_predictions
 from utils import CocoDataset, get_test_loader
 from torchvision import transforms
 
-# Initialising the dataset
-my_dataset = CocoDataset(
-    root=config.train_data_dir, transforms=transforms.ToTensor()
-)
+def main():
+    # Initialising the dataset
+    my_dataset = CocoDataset(
+        root=config.train_data_dir, transforms=transforms.ToTensor()
+    )
 
-# spliting out test data
-test_indices = random.sample(range(len(my_dataset)), 100)
-test_dataset = Subset(my_dataset, test_indices)
-test_loader = get_test_loader(test_dataset)
+    # spliting out test data
+    test_indices = random.sample(range(len(my_dataset)), 100)
+    test_dataset = Subset(my_dataset, test_indices)
+    test_loader = get_test_loader(test_dataset)
 
-# Selecting device (whether GPU or CPU)
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    # Selecting device (whether GPU or CPU)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-# Load the pre-trained Faster R-CNN model
-model = fasterrcnn_resnet50_fpn(pretrained=True)
-model.to(device)
+    # Load the pre-trained Faster R-CNN model
+    model = fasterrcnn_resnet50_fpn(pretrained=True)
+    model.to(device)
 
-# Evaluate on the test set
-model.eval()
-test_results = []
-with torch.no_grad():
-    for i, (imgs, annotations) in enumerate(test_loader):
-        imgs = list(img.to(device) for img in imgs)
-        predictions = model(imgs)
+    # Evaluate on the test set
+    model.eval()
+    test_results = []
+    with torch.no_grad():
+        for i, (imgs, annotations) in enumerate(test_loader):
+            imgs = list(img.to(device) for img in imgs)
+            predictions = model(imgs)
 
-        for j, (img_tensor, prediction, target) in enumerate(zip(imgs, predictions, annotations)):
-            save_predictions(img_tensor, prediction, image_id=i * len(imgs) + j)
+            for j, (img_tensor, prediction, target) in enumerate(zip(imgs, predictions, annotations)):
+                save_predictions(img_tensor, prediction, image_id=i * len(imgs) + j)
 
-            pred_boxes = prediction['boxes'].cpu().numpy()
-            pred_scores = prediction['scores'].cpu().numpy()
+                pred_boxes = prediction['boxes'].cpu().numpy()
+                pred_scores = prediction['scores'].cpu().numpy()
 
-            confidence_threshold = 0.5
-            indices = np.where(pred_scores > confidence_threshold)[0]
-            pred_boxes = pred_boxes[indices]
-            pred_scores = pred_scores[indices]
+                confidence_threshold = 0.5
+                indices = np.where(pred_scores > confidence_threshold)[0]
+                pred_boxes = pred_boxes[indices]
+                pred_scores = pred_scores[indices]
 
-            test_results.append({
-                'pred_boxes': pred_boxes,
-                'pred_labels': prediction['labels'].cpu().numpy(),
-                'pred_scores': pred_scores,
-                'target_boxes': target['boxes'].cpu().numpy(),
-                'target_labels': target['labels'].cpu().numpy()
-            })
+                test_results.append({
+                    'pred_boxes': pred_boxes,
+                    'pred_labels': prediction['labels'].cpu().numpy(),
+                    'pred_scores': pred_scores,
+                    'target_boxes': target['boxes'].cpu().numpy(),
+                    'target_labels': target['labels'].cpu().numpy()
+                })
 
-calculate_accuracy(test_results)
+    calculate_accuracy(test_results)
+
+if __name__ == '__main__':
+    main()
