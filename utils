@@ -1,0 +1,132 @@
+import os
+import torch
+import torch.utils.data
+import torchvision
+from PIL import Image
+import json
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+import config
+
+from torch.utils.data import DataLoader
+
+class CocoDataset(torch.utils.data.Dataset):
+    def __init__(self, root, transforms=None):
+        self.root = root
+        self.transforms = transforms
+        self.ids = [f for f in os.listdir(root) if f.endswith('.jpg')]
+
+    def __getitem__(self, index):
+        # Get the image file name
+        img_name = self.ids[index]
+        img_path = os.path.join(self.root, img_name)
+
+        # Load the image
+        img = Image.open(img_path).convert("RGB")
+
+        # Construct the annotation file name
+        annotation_name = os.path.splitext(img_name)[0] + '.json'
+        annotation_path = os.path.join(self.root, annotation_name)
+
+        # Load the corresponding annotation
+        with open(annotation_path, 'r') as f:
+            coco_annotations = json.load(f)
+
+        # Initialize lists for boxes and labels
+        boxes = []
+        labels = []
+
+        for obj in coco_annotations:
+            # Extract bounding box [x_min, y_min, width, height]
+            xmin, ymin, width, height = obj['bbox']
+            xmax = xmin + width
+            ymax = ymin + height
+
+            # Append the box and label
+            boxes.append([xmin, ymin, xmax, ymax])
+            labels.append(obj['category_id'])
+
+        # Convert to tensor
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+
+        # Image ID
+        img_id = torch.tensor([obj['image_id'] for obj in coco_annotations])
+
+        # Areas of bounding boxes
+        areas = torch.as_tensor([obj['area'] for obj in coco_annotations], dtype=torch.float32)
+
+        iscrowd = torch.as_tensor([obj.get('iscrowd', 0) for obj in coco_annotations], dtype=torch.int64)
+
+        # annotation dictionary
+        my_annotation = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": img_id,
+            "area": areas,
+            "iscrowd": iscrowd
+        }
+
+        # Apply any image transformations if provided
+        if self.transforms is not None:
+            img = self.transforms(img)
+
+        return img, my_annotation
+
+    def __len__(self):
+        return len(self.ids)
+
+# just added ToTensor
+def get_transform():
+    custom_transforms = []
+    custom_transforms.append(torchvision.transforms.ToTensor())
+    return torchvision.transforms.Compose(custom_transforms)
+
+# collate_fn for batch
+def collate_fn(batch):
+    return tuple(zip(*batch))
+
+
+def get_model(num_classes):
+    # load an instance segmentation model pre-trained pre-trained on COCO
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+    for param in model.backbone.parameters():
+        param.requires_grad = False;
+    # get number of input features for the classifier
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # replace the pre-trained head with a new one
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    return model
+
+def get_train_loader(train_dataset):
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.train_batch_size,
+        shuffle=config.train_shuffle_dl,
+        num_workers=config.num_workers_dl,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
+    return train_loader
+
+def get_validation_loader(val_dataset):
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.train_batch_size,
+        shuffle=False,
+        num_workers=config.num_workers_dl,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
+    return val_loader
+
+def get_test_loader(test_dataset):
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=config.num_workers_dl,
+        pin_memory=True,
+        collate_fn=collate_fn
+    )
+    return test_loader
